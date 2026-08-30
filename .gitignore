@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+*.db
+*.db-journal
+.env
+uploads/
+.vercel
+.credentials.json
+.policy-seeded

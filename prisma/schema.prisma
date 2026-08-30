@@ -1,0 +1,1082 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  title     String    @default("New chat")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String
+  status         String        @default("complete")
+  createdAt      DateTime      @default(now())
+  attachments    Attachment[]
+  controlEvent   ControlEvent?
+}
+
+model Attachment {
+  id               String   @id @default(cuid())
+  messageId        String?
+  message          Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  name             String
+  mimeType         String
+  size             Int
+  type             String
+  status           String   @default("ready")
+  previewUrl       String?
+  storageRef       String?
+  /// Text extracted from a document upload, kept so a later turn can refer
+  /// back to "that PDF" without re-reading or re-sending the whole file.
+  extractedText    String?
+  extractionStatus String?
+  createdAt        DateTime @default(now())
+}
+
+model ControlEvent {
+  id                   String   @id @default(cuid())
+  /// The control-loop request this event belongs to. Lets audit and batch
+  /// sampling join back to checker outcomes and policy decisions.
+  requestId            String   @default("")
+  /// Governing use-case profile, needed for profile-scoped auditing.
+  profileId            String   @default("CUSTOMER_SUPPORT")
+  messageId            String   @unique
+  message              Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  taskType             String
+  complexity           Float    @default(0)
+  recommendedModel     String
+  selectedModel        String
+  provider             String
+  effort               String
+  estimatedCost        Float    @default(0)
+  actualCost           Float    @default(0)
+  inputTokens          Int      @default(0)
+  outputTokens         Int      @default(0)
+  performanceResult    String
+  costResult           String
+  responsibilityResult String
+  riskLevel            String
+  verificationDepth    String
+  decision             String
+  reason               String   @default("")
+  latencyMs            Int      @default(0)
+  attempts             Int      @default(1)
+  payload              String   @default("{}")
+  createdAt            DateTime @default(now())
+}
+
+model AuditEvent {
+  id                   String   @id @default(cuid())
+  requestId            String
+  userId               String   @default("local-user")
+  taskType             String
+  selectedModel        String
+  provider             String
+  estimatedCost        Float    @default(0)
+  actualCost           Float    @default(0)
+  performanceResult    String
+  responsibilityResult String
+  riskLevel            String
+  decision             String
+  action               String   @default("none")
+  humanDecision        String?
+  payload              String   @default("{}")
+  createdAt            DateTime @default(now())
+}
+
+model LearningRecord {
+  id            String   @id @default(cuid())
+  modelId       String
+  taskType      String
+  complexity    Float    @default(0)
+  success       Boolean  @default(true)
+  verification  String
+  humanOverride Boolean  @default(false)
+  cost          Float    @default(0)
+  latencyMs     Int      @default(0)
+  createdAt     DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// MODEL INTELLIGENCE
+//
+// OpenRouter metadata and dotAI's own capability knowledge are stored
+// separately on purpose: a catalog sync may update prices and context windows,
+// but it must never overwrite what dotAI has learned.
+// ---------------------------------------------------------------------------
+
+model Model {
+  id                String  @id @default(cuid())
+  openrouterModelId String  @unique
+  name              String
+  provider          String
+  architecture      String?
+  description       String?
+
+  // --- OpenRouter catalog facts ---
+  contextLength       Int     @default(0)
+  inputPrice          Float   @default(0) // USD per 1M input tokens
+  /// False when the provider reports no usable price (OpenRouter sends "-1").
+  /// A column so unknown-price models sort last instead of first.
+  pricingKnown        Boolean @default(true)
+  outputPrice         Float   @default(0) // USD per 1M output tokens
+  imagePrice          Float   @default(0)
+  requestPrice        Float   @default(0)
+  supportedParameters String  @default("[]")
+  latencyClass        String  @default("balanced")
+  throughput          Float?
+
+  // --- lifecycle ---
+  active           Boolean   @default(true)
+  /// Which OpenRouter catalogs surfaced this model, and therefore which
+  /// request shape it expects: chat | images | videos | embeddings.
+  catalogEndpoints String    @default("[\"chat\"]")
+  source           String    @default("SEED") // SEED | OPENROUTER
+  firstSeenAt      DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
+  lastSyncedAt     DateTime?
+
+  categories             ModelCategoryLink[]
+  modalities             ModelModality[]
+  capability             ModelCapability?
+  outcomes               ModelOutcome[]
+  revisions              ModelCapabilityRevision[]
+  modelExecutionStatuses ModelExecutionStatus[]
+  taskCapabilities       ModelTaskCapability[]
+  taskScores             ModelTaskScore[]
+  taskAssessments        ModelTaskAssessment[]
+  miniTaskCapabilities   ModelMiniTaskCapability[]
+  championships          ModelChampion[]
+
+  @@index([active])
+  @@index([provider])
+}
+
+model ModelCategoryLink {
+  id       String @id @default(cuid())
+  modelId  String
+  model    Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  category String // TEXT | IMAGE | VIDEO | SPEECH | TRANSCRIPTION | EMBEDDINGS | RERANK | AUDIO
+
+  @@unique([modelId, category])
+  @@index([category])
+}
+
+model ModelModality {
+  id        String @id @default(cuid())
+  modelId   String
+  model     Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  direction String // INPUT | OUTPUT
+  modality  String // TEXT | IMAGE | AUDIO | VIDEO | FILE | EMBEDDING | RERANK
+
+  @@unique([modelId, direction, modality])
+  @@index([direction, modality])
+}
+
+/// dotAI's seven-field capability profile. Owned by dotAI, never by OpenRouter.
+model ModelCapability {
+  id      String @id @default(cuid())
+  modelId String @unique
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  effort                String // LOW | MEDIUM | HIGH
+  reasoning             String
+  contextHandling       String
+  instructionComplexity String
+  reliability           String
+  toolCapability        String // NONE | BASIC | ADVANCED
+  outputCapabilities    String @default("[\"TEXT\"]") // JSON array
+
+  status               String   @default("UNASSESSED") // ASSESSED | UNASSESSED
+  assessmentSource     String   @default("INITIAL") // INITIAL | BENCHMARK | MANUAL | OBSERVED
+  /// DIRECT_PROVIDER_DATA | CONTROLLED_BENCHMARK | OBSERVED_DOTAI_DATA | MANUAL_ASSESSMENT | INFERRED
+  evidenceLevel        String   @default("INFERRED")
+  assessmentVersion    String   @default("v1")
+  /// Per-field confidence as JSON, so a benchmark-validated HIGH is not
+  /// treated like an inferred HIGH.
+  fieldConfidence      String   @default("{}")
+  unassessedReason     String?
+  capabilityConfidence Float    @default(0.5)
+  assessmentDate       DateTime @default(now())
+  lastEvaluatedAt      DateTime @default(now())
+
+  @@index([status])
+}
+
+/// One row per generation. This is the evidence the feedback loop learns from.
+model ModelOutcome {
+  id        String @id @default(cuid())
+  modelId   String
+  model     Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  requestId String
+
+  taskType       String
+  complexity     Float  @default(0)
+  complexityBand String @default("MEDIUM") // LOW | MEDIUM | HIGH
+
+  // The requirement profile this generation was asked to satisfy.
+  requirements String @default("{}")
+
+  estimatedCost    Float @default(0)
+  actualCost       Float @default(0)
+  caiCost          Float @default(0)
+  verificationCost Float @default(0)
+  retryCost        Float @default(0)
+  totalCost        Float @default(0)
+  latencyMs        Int   @default(0)
+
+  performanceResult    String
+  responsibilityResult String
+  costResult           String
+  decision             String
+  regenerationCount    Int     @default(0)
+  humanDecision        String?
+
+  category     String // SUCCESS | PERFORMANCE_FAILURE | ...
+  success      Boolean @default(false)
+  disagreement String  @default("NONE") // NONE | FALSE_NEGATIVE | FALSE_POSITIVE
+  simulated    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@index([modelId, taskType])
+  @@index([category])
+  @@index([requestId])
+}
+
+/// Auditable history of every capability change. Profiles are never silently
+/// overwritten - a revision records what changed and on what evidence.
+model ModelCapabilityRevision {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  fieldChanged  String
+  oldValue      String
+  newValue      String
+  reason        String
+  evidenceCount Int      @default(0)
+  successRate   Float    @default(0)
+  taskType      String?
+  createdAt     DateTime @default(now())
+
+  @@index([modelId])
+}
+
+model ModelSyncEvent {
+  id          String   @id @default(cuid())
+  status      String // SUCCESS | FAILED | PARTIAL
+  fetched     Int      @default(0)
+  created     Int      @default(0)
+  updated     Int      @default(0)
+  deactivated Int      @default(0)
+  durationMs  Int      @default(0)
+  error       String?
+  createdAt   DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// CAI BENCHMARKING
+// Evidence for why a particular CAI model was selected.
+// ---------------------------------------------------------------------------
+
+model CAIBenchmarkRun {
+  id               String   @id @default(cuid())
+  benchmarkVersion String
+  caseCount        Int      @default(0)
+  mode             String   @default("MOCK") // MOCK | LIVE
+  selectedModelId  String?
+  notes            String   @default("")
+  createdAt        DateTime @default(now())
+
+  results CAIBenchmarkResult[]
+}
+
+model CAIBenchmarkResult {
+  id    String          @id @default(cuid())
+  runId String
+  run   CAIBenchmarkRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  modelId           String
+  accuracy          Float    @default(0) // exact task-type match
+  fieldAccuracy     Float    @default(0) // per-field agreement across 7 fields
+  schemaSuccessRate Float    @default(0)
+  averageLatencyMs  Float    @default(0)
+  averageCost       Float    @default(0)
+  failureRate       Float    @default(0)
+  meetsThresholds   Boolean  @default(false)
+  selected          Boolean  @default(false)
+  rejectionReason   String?
+  createdAt         DateTime @default(now())
+
+  @@index([runId])
+}
+
+// ---------------------------------------------------------------------------
+// EXECUTABILITY
+//
+// Capability answers "could this model do the task". Executability answers
+// "can dotAI actually run it right now". A model can be CAPABLE and NOT
+// EXECUTABLE, and must not be recommended in that state.
+// ---------------------------------------------------------------------------
+
+model ModelExecutionStatus {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// TEXT | IMAGE | AUDIO | VIDEO | EMBEDDING
+  modality String
+  /// UNKNOWN | AVAILABLE | UNAVAILABLE | FAILED | TEMPORARILY_UNAVAILABLE | UNSUPPORTED
+  status   String @default("UNKNOWN")
+
+  /// MODEL_NOT_FOUND | MODEL_INACTIVE | PROVIDER_UNAVAILABLE | MODALITY_UNSUPPORTED |
+  /// ENDPOINT_UNSUPPORTED | INVALID_REQUEST | AUTHENTICATION_ERROR | RATE_LIMIT |
+  /// TIMEOUT | PROVIDER_ERROR | GENERATION_FAILED | UNKNOWN_ERROR
+  failureReason  String?
+  failureMessage String?
+
+  provider      String?
+  endpoint      String?
+  checkVersion  String   @default("v1")
+  lastCheckedAt DateTime @default(now())
+
+  /// Rolling execution health, so one bad request never disqualifies a model.
+  attempts  Int @default(0)
+  successes Int @default(0)
+
+  /// Fingerprint of the provider metadata this result was based on. When the
+  /// catalog changes the fingerprint changes and the cache is invalidated.
+  metadataFingerprint String @default("")
+  /// What the live probes for this model/modality have cost so far.
+  probeCostUsd        Float  @default(0)
+  probeCount          Int    @default(0)
+
+  @@unique([modelId, modality])
+  @@index([status])
+  @@index([modality, status])
+}
+
+/// Historical execution failures are kept, never overwritten.
+model ModelExecutionEvent {
+  id                String   @id @default(cuid())
+  openrouterModelId String
+  modality          String
+  success           Boolean  @default(false)
+  failureReason     String?
+  failureMessage    String?
+  requestId         String?
+  createdAt         DateTime @default(now())
+
+  @@index([openrouterModelId, modality])
+}
+
+// ---------------------------------------------------------------------------
+// GOVERNANCE
+//
+// Session risk is a property of a conversation, never of a model. It is kept
+// in its own table so an unlucky conversation can never contaminate model
+// capability, reliability or execution health.
+// ---------------------------------------------------------------------------
+
+model SessionRisk {
+  id        String @id @default(cuid())
+  sessionId String @unique
+
+  profileId String @default("CUSTOMER_SUPPORT")
+  riskScore Float  @default(0)
+  riskLevel String @default("LOW") // LOW | MEDIUM | HIGH
+
+  unverifiedClaimCount       Int @default(0)
+  contradictionCount         Int @default(0)
+  responsibilityFindingCount Int @default(0)
+  highRiskActionCount        Int @default(0)
+  turnCount                  Int @default(0)
+
+  createdAt     DateTime @default(now())
+  lastUpdatedAt DateTime @updatedAt
+
+  @@index([riskLevel])
+}
+
+/// One row per checker run, so false-positive/negative rates can be measured
+/// per use case rather than as one global number.
+model CheckerOutcome {
+  id        String  @id @default(cuid())
+  requestId String
+  profileId String
+  sessionId String?
+
+  decision          String
+  interventionTaken Boolean @default(false)
+  escalatedToHuman  Boolean @default(false)
+
+  categories        String @default("[]") // JSON array of risk labels
+  findingCount      Int    @default(0)
+  verificationDepth String @default("light")
+  sessionRiskLevel  String @default("LOW")
+
+  checkerLatencyMs      Int     @default(0)
+  /// Whether any claim could actually be verified against a source.
+  verificationAttempted Boolean @default(false)
+  verificationPossible  Boolean @default(false)
+
+  /// Full cost accounting for this request. Estimated is kept separate from
+  /// actual so drift between them is visible rather than hidden.
+  estimatedCost        Float  @default(0)
+  generationCost       Float  @default(0)
+  caiCost              Float  @default(0)
+  ragCost              Float  @default(0)
+  verificationCost     Float  @default(0)
+  retryCost            Float  @default(0)
+  totalCost            Float  @default(0)
+  controlPlaneOverhead Float  @default(0)
+  selectedModel        String @default("")
+
+  /// Ground truth, only ever set by a human. Null means unknown - metrics
+  /// derived from it are reported as unavailable rather than guessed.
+  humanVerdict String? // CORRECT_FLAG | FALSE_ALARM | MISSED_RISK | CORRECT_PASS
+  createdAt    DateTime @default(now())
+
+  feedback HumanFeedback[]
+
+  @@index([profileId])
+  @@index([requestId])
+}
+
+// ---------------------------------------------------------------------------
+// TIER 2 — POLICY PACKS, RAG EVIDENCE AND BATCH AUDIT
+//
+// Policy text is evidence, not authority. The deterministic Policy Decision
+// Engine decides; retrieval only supplies what the decision cites.
+// ---------------------------------------------------------------------------
+
+model PolicyDocument {
+  id            String   @id @default(cuid())
+  name          String
+  jurisdiction  String // EU | IN | US | GLOBAL
+  regulation    String // GDPR | DPDP | INTERNAL | ...
+  version       String
+  effectiveDate DateTime @default(now())
+  source        String   @default("DEMO")
+  sourceUrl     String?
+  /// DEMO packs are illustrative, never a statement of legal compliance.
+  isDemo        Boolean  @default(true)
+  status        String   @default("ACTIVE") // ACTIVE | SUPERSEDED | DRAFT
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  chunks PolicyChunk[]
+
+  @@unique([regulation, jurisdiction, version])
+  @@index([jurisdiction, status])
+}
+
+model PolicyChunk {
+  id             String         @id @default(cuid())
+  documentId     String
+  document       PolicyDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  section        String
+  text           String
+  jurisdiction   String
+  regulation     String
+  version        String
+  category       String // PRIVACY | PERSONAL_DATA | ... controlled vocabulary
+  /// JSON float array. Kept in-row: SQLite has no native vector type and this
+  /// prototype's corpus is small enough that a scan is cheaper than migrating.
+  embedding      String         @default("[]")
+  embeddingModel String         @default("none")
+  createdAt      DateTime       @default(now())
+
+  @@index([jurisdiction, category])
+  @@index([documentId])
+}
+
+/// The evidence and reasoning behind one policy decision, preserved so an old
+/// decision stays explainable after the policy itself changes.
+model PolicyDecisionRecord {
+  id             String   @id @default(cuid())
+  requestId      String
+  profileId      String
+  jurisdiction   String
+  decision       String // ALLOW | ANNOTATE | HOLD | BLOCK | UNVERIFIABLE
+  reason         String
+  conflict       Boolean  @default(false)
+  retrievalMode  String   @default("LEXICAL_FALLBACK")
+  /// Full retrieved evidence as JSON: document, version, section, text, score.
+  evidence       String   @default("[]")
+  riskCategories String   @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([requestId])
+  @@index([profileId])
+}
+
+model BatchAuditRun {
+  id             String   @id @default(cuid())
+  strategy       String // RANDOM | RISK_BASED | MODEL_BASED | PROFILE_BASED
+  sampleSize     Int      @default(0)
+  populationSize Int      @default(0)
+  profileId      String?
+  jurisdiction   String   @default("EU")
+  deepChecks     Int      @default(0)
+  findingsCount  Int      @default(0)
+  checkerCostUsd Float    @default(0)
+  durationMs     Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  findings BatchAuditFinding[]
+}
+
+model BatchAuditFinding {
+  id    String        @id @default(cuid())
+  runId String
+  run   BatchAuditRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  messageId        String?
+  requestId        String?
+  modelId          String?
+  profileId        String?
+  riskCategories   String   @default("[]")
+  severity         String   @default("low")
+  policyDecision   String   @default("ALLOW")
+  originalDecision String   @default("ALLOW")
+  /// Set when the batch pass disagrees with what shipped at the time.
+  divergent        Boolean  @default(false)
+  reason           String   @default("")
+  evidence         String   @default("[]")
+  deepChecked      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([runId])
+}
+
+// ---------------------------------------------------------------------------
+// TIER 3 — ANOMALY BASELINES AND AI VERIFICATION
+//
+// An anomaly is a signal to look harder, never proof that an answer is wrong.
+// Verifier calls are recorded so their cost and quality can be measured.
+// ---------------------------------------------------------------------------
+
+/// One embedded sample of what "normal" looks like for a slice of traffic.
+model AnomalyBaselineSample {
+  id        String @id @default(cuid())
+  /// Baselines are per slice - support answers are not compared to image prompts.
+  profileId String
+  taskType  String
+  modelId   String
+  modality  String @default("TEXT")
+
+  embedding String   @default("[]")
+  /// Kept short, purely so a baseline can be eyeballed during review.
+  excerpt   String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([profileId, taskType, modelId, modality])
+}
+
+model VerifierCall {
+  id        String @id @default(cuid())
+  requestId String
+
+  verifierModel   String
+  generationModel String
+  /// True when no independent verifier was available and the generator
+  /// checked its own work. Recorded because it weakens the result.
+  sameModel       Boolean @default(false)
+
+  claimsVerified Int @default(0)
+  supported      Int @default(0)
+  contradicted   Int @default(0)
+  unverifiable   Int @default(0)
+
+  /// SUPPORTED | CONTRADICTED | UNVERIFIABLE | VERIFICATION_UNAVAILABLE
+  outcome       String
+  failureReason String?
+  confidence    Float   @default(0)
+  costUsd       Float   @default(0)
+  latencyMs     Int     @default(0)
+
+  profileId    String @default("CUSTOMER_SUPPORT")
+  anomalyScore Float  @default(0)
+  anomalyBand  String @default("NORMAL")
+
+  /// Set only when a human later labelled this, so FP/FN stay honest.
+  groundTruth String?
+  createdAt   DateTime @default(now())
+
+  @@index([requestId])
+  @@index([profileId])
+  @@index([verifierModel])
+}
+
+/// Human judgements on a decision. Recorded as evidence, not as infallible
+/// truth: reviewers disagree, and a single label never rewrites a model.
+model HumanFeedback {
+  id        String          @id @default(cuid())
+  requestId String
+  outcomeId String?
+  outcome   CheckerOutcome? @relation(fields: [outcomeId], references: [id], onDelete: SetNull)
+
+  /// CORRECT | INCORRECT | UNSAFE | POLICY_VIOLATION | FALSE_POSITIVE |
+  /// FALSE_NEGATIVE | UNVERIFIABLE
+  verdict    String
+  comment    String   @default("")
+  reviewer   String   @default("local-user")
+  /// How much weight this reviewer's judgement carries as ground truth.
+  confidence Float    @default(1)
+  /// True when another reviewer has given a conflicting verdict.
+  disputed   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([requestId])
+  @@index([verdict])
+}
+
+// ---------------------------------------------------------------------------
+// PROMPT LIBRARY
+//
+// User-owned, database-backed prompt templates. Library is an entry point into
+// the existing pipeline, never a shortcut around it: a Library run produces a
+// filled prompt that goes through CAI, model selection and ControlPlane like
+// any other request.
+// ---------------------------------------------------------------------------
+
+/// Personalization for a user. Distinct from UseCaseProfile, which governs
+/// enterprise risk behaviour and has nothing to do with this.
+model UserProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  designation    String  @default("Other")
+  specialization String  @default("Other")
+  experience     String  @default("Intermediate")
+  /// Free-text values when the presets do not fit.
+  customRole     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PromptTemplate {
+  id      String @id @default(cuid())
+  ownerId String
+
+  title       String
+  description String @default("")
+  category    String @default("OTHER")
+  template    String
+
+  inputModality  String @default("TEXT") // TEXT | IMAGE | DOCUMENT
+  outputModality String @default("TEXT") // TEXT | IMAGE | DOCUMENT
+  taskType       String @default("AUTO")
+
+  /// Bumped on every edit so historical usage stays attributable to the
+  /// template text that actually ran.
+  version    Int       @default(1)
+  usageCount Int       @default(0)
+  /// Soft delete: hides the prompt without destroying usage history.
+  deletedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variables PromptVariable[]
+  favorites PromptFavorite[]
+  usages    PromptUsage[]
+
+  @@index([ownerId, deletedAt])
+  @@index([category])
+}
+
+model PromptVariable {
+  id       String         @id @default(cuid())
+  promptId String
+  prompt   PromptTemplate @relation(fields: [promptId], references: [id], onDelete: Cascade)
+
+  name         String
+  label        String  @default("")
+  description  String  @default("")
+  /// TEXT | LONG_TEXT | NUMBER | SELECT | FILE | IMAGE | DOCUMENT
+  type         String  @default("TEXT")
+  required     Boolean @default(true)
+  defaultValue String  @default("")
+  /// JSON array of choices, used when type is SELECT.
+  options      String  @default("[]")
+  order        Int     @default(0)
+
+  @@unique([promptId, name])
+  @@index([promptId])
+}
+
+model PromptFavorite {
+  id        String         @id @default(cuid())
+  promptId  String
+  prompt    PromptTemplate @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime       @default(now())
+
+  @@unique([promptId, userId])
+  @@index([userId])
+}
+
+/// One execution of a Library prompt. Retains a snapshot of the template that
+/// ran, so an edit never rewrites history.
+model PromptUsage {
+  id       String         @id @default(cuid())
+  promptId String
+  prompt   PromptTemplate @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  userId   String
+
+  conversationId   String?
+  requestId        String?
+  selectedModel    String   @default("")
+  promptVersion    Int      @default(1)
+  templateSnapshot String   @default("")
+  filledPrompt     String   @default("")
+  success          Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([promptId])
+  @@index([userId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// MODEL INTELLIGENCE INDEX
+//
+// The catalog answers "what models exist". This layer answers "which models
+// can do THIS task, and which of them is currently best". Catalog rows are
+// never deleted to keep this index small - a model simply stops being a
+// candidate.
+// ---------------------------------------------------------------------------
+
+/// Per-capability assessment. A model may be VERIFIED for IMAGE_GENERATION
+/// while its LONG_CONTEXT status is UNKNOWN - missing metadata for one
+/// capability must never disqualify it for another.
+model ModelTaskCapability {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// From the capability taxonomy, e.g. IMAGE_GENERATION, TEXT_OUTPUT.
+  capability String
+  /// UNKNOWN | SUPPORTED | VERIFIED | UNSUPPORTED | FAILED
+  status     String @default("UNKNOWN")
+  /// METADATA | PROBE | EXECUTION | MANUAL
+  evidence   String @default("METADATA")
+  detail     String @default("")
+
+  lastValidated DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([modelId, capability])
+  @@index([capability, status])
+}
+
+/// Task-specific measured performance. The same model can be strong at image
+/// generation and weak at coding, so scores are never global.
+model ModelTaskScore {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  taskType   String
+  capability String @default("")
+
+  /// All normalised 0..1 so they can be combined. Presented as 0-100.
+  qualityScore     Float @default(0.5)
+  reliabilityScore Float @default(0.5)
+  costScore        Float @default(0.5)
+  latencyScore     Float @default(0.5)
+  executionScore   Float @default(0.5)
+  capabilityScore  Float @default(0.5)
+  overallScore     Float @default(0.5)
+
+  /// How well the model performs the task itself, as distinct from how good
+  /// the finished artefact is. A model can reason well and still format badly.
+  taskIntelligenceScore Float @default(0.5)
+  /// Usefulness and accuracy of the finished result.
+  outputQualityScore    Float @default(0.5)
+  /// Whether the context window covers the input this task typically needs.
+  contextCapacityScore  Float @default(0.5)
+  /// Ability to return the demanded shape: JSON, an image, a tool call.
+  outputComplianceScore Float @default(0.5)
+  /// Derived: performance obtained per unit of expected total cost. Never a
+  /// synonym for "cheap" - see lib/intelligence/matrix.ts.
+  costEfficiencyScore   Float @default(0.5)
+
+  /// Per-field provenance as JSON: { "reliability": "ESTIMATED", ... } with
+  /// values OBSERVED | ESTIMATED | INFERRED | UNKNOWN. Kept as one column so
+  /// adding a dimension needs no migration, and so no score can be presented
+  /// as measured when it was seeded.
+  dataQuality String @default("{}")
+
+  /// Which benchmark seed produced this row, so a seed can be re-imported or
+  /// superseded without destroying observed history.
+  seedVersion String?
+
+  /// Per-field status as JSON: { "reliability": "UNKNOWN", "contextCapacity":
+  /// "NOT_APPLICABLE", ... }. A score column always holds a number because
+  /// the column is typed Float; this is what says whether that number means
+  /// anything. A field marked UNKNOWN or NOT_APPLICABLE must never be shown
+  /// or ranked as if it were a measurement.
+  fieldStatus String @default("{}")
+
+  /// Where this row came from: BENCHMARK | DOTAI_OBSERVED | DERIVED.
+  source        String    @default("DERIVED")
+  /// The date the benchmark itself was compiled, not the date it was imported.
+  benchmarkDate DateTime?
+  /// Free-text provenance from the seed, e.g. a publication or vendor doc.
+  sourceNote    String    @default("")
+
+  /// Endpoint the assessment applies to: chat | images | videos | audio.
+  /// Part of the stable import key, because the same model can be assessed
+  /// separately per endpoint.
+  endpointType String @default("chat")
+
+  /// Static pricing as recorded by the benchmark, kept even after a live
+  /// OpenRouter price supersedes it for routing. History is not destroyed.
+  staticPricing String @default("{}")
+
+  successCount Int    @default(0)
+  failureCount Int    @default(0)
+  sampleCount  Int    @default(0)
+  /// LOW | MEDIUM | HIGH, derived from sampleCount.
+  confidence   String @default("LOW")
+
+  averageLatencyMs Float @default(0)
+  p50LatencyMs     Float @default(0)
+  p95LatencyMs     Float @default(0)
+  averageCost      Float @default(0)
+  successRate      Float @default(0)
+
+  lastSuccess     DateTime?
+  lastFailure     DateTime?
+  lastScoreUpdate DateTime  @default(now())
+
+  /// Stable import key: a task, a model and the endpoint it was assessed on.
+  /// Importing by display name would create duplicates the moment a provider
+  /// renames a model.
+  @@unique([modelId, taskType, endpointType])
+  @@index([taskType, overallScore])
+}
+
+/// Per-task candidate pool health. Stored rather than recomputed on render,
+/// so the UI can state honestly that a task has 8 of a target 10 candidates
+/// instead of implying either completeness or emptiness.
+model TaskCandidatePool {
+  id       String @id @default(cuid())
+  taskType String @unique
+
+  candidateTarget Int @default(10)
+  candidateCount  Int @default(0)
+  /// How many of those have been proven to run by a real dotAI call.
+  verifiedCount   Int @default(0)
+
+  /// READY | READY_PARTIAL | NO_VERIFIED_CANDIDATES | NO_CANDIDATES
+  taskStatus String @default("NO_CANDIDATES")
+
+  lastBuiltAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([taskStatus])
+}
+
+/// Current leaders per task. Regenerated from scores, never hand-written.
+model ModelChampion {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  taskType     String
+  capability   String @default("")
+  /// QUALITY | VALUE | SPEED | RELIABILITY | DEFAULT
+  championType String
+  /// The profile these weights came from, since ranking differs per use case.
+  profileId    String @default("GLOBAL")
+
+  score      Float  @default(0)
+  confidence String @default("LOW")
+  /// Short, measurable reasons. Never chain-of-thought.
+  reason     String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([taskType, championType, profileId])
+  @@index([taskType])
+}
+
+/// Who held a championship and when, so ranking changes stay explainable.
+model ModelChampionHistory {
+  id           String @id @default(cuid())
+  taskType     String
+  championType String
+  profileId    String @default("GLOBAL")
+
+  modelId       String
+  previousModel String?
+  score         Float    @default(0)
+  reason        String   @default("")
+  createdAt     DateTime @default(now())
+
+  @@index([taskType, championType])
+}
+
+/// One AI-evaluated assessment of a model for a task.
+///
+/// Separate from ModelTaskScore, which holds dotAI's own observations. Keeping
+/// them apart is what lets an evaluator run be discarded or replaced without
+/// destroying measured execution history.
+model ModelTaskAssessment {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  taskType String
+
+  /// Hard gate outcome. An ineligible row is retained so the UI can explain
+  /// why a model the user expected is absent.
+  eligible         Boolean @default(false)
+  ineligibleReason String  @default("")
+
+  /// The seven dimensions, 0..1 internally, presented 0-10.
+  taskIntelligence Float?
+  outputQuality    Float?
+  reliability      Float?
+  costEfficiency   Float?
+  latency          Float?
+  contextCapacity  Float?
+  modalityFit      Float?
+
+  /// HIGH | MEDIUM | LOW
+  confidence String @default("LOW")
+  /// The trade-off this model represents, derived from its own scores.
+  tradeoff   String @default("")
+  strengths  String @default("[]")
+  weaknesses String @default("[]")
+  reason     String @default("")
+
+  /// Rank within the task's diverse Top N, or null when not selected.
+  topRank    Int?
+  /// Weighted task score used for ranking, before diversity selection.
+  taskScore  Float @default(0)
+
+  /// AI_EVALUATOR | HEURISTIC. Says whether Opus actually produced this.
+  source          String @default("HEURISTIC")
+  evaluatorModel  String @default("")
+  evaluationVersion String @default("")
+  /// Hash of the inputs this assessment was derived from. Unchanged
+  /// fingerprint means the assessment may be reused instead of re-evaluated.
+  dataFingerprint String @default("")
+
+  evaluatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([modelId, taskType])
+  @@index([taskType, topRank])
+  @@index([dataFingerprint])
+}
+
+/// One run of the offline evaluator, for cost tracking and failure recovery.
+model IntelligenceEvaluationRun {
+  id String @id @default(cuid())
+
+  /// RUNNING | SUCCESS | PARTIAL | FAILED
+  status         String   @default("RUNNING")
+  evaluatorModel String   @default("")
+  version        String   @default("")
+
+  tasksEvaluated  Int @default(0)
+  modelsEvaluated Int @default(0)
+  modelsSkipped   Int @default(0)
+  tasksFailed     Int @default(0)
+
+  inputTokens     Int   @default(0)
+  outputTokens    Int   @default(0)
+  estimatedCostUsd Float @default(0)
+
+  /// Populated on failure. The previous assessments are never deleted.
+  error String @default("")
+  /// Per-task outcome as JSON, so a partial run is explainable.
+  detail String @default("{}")
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([status, startedAt])
+}
+
+/// A model's verified capability for one primary mini-task — its List B entry.
+///
+/// A row exists only after the model has been probed. `verified` is true only
+/// when it passed ALL THREE isolated examples: one success is not a
+/// capability, and metadata is never enough to create a row here.
+model ModelMiniTaskCapability {
+  id      String @id @default(cuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Mini-task id from lib/intelligence/mini-tasks.ts.
+  miniTaskId String
+
+  /// True only on 3 of 3. This is what eligibility reads.
+  verified Boolean @default(false)
+  passed   Int     @default(0)
+  attempted Int    @default(0)
+
+  /// Per-example outcome as JSON, so a label can be audited or disputed.
+  evidence String @default("[]")
+  /// Which probe run produced this, so a rerun can supersede it.
+  probeVersion String @default("")
+  /// Real spend on this model+mini-task, for cost accounting.
+  costUsd Float @default(0)
+
+  evaluatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([modelId, miniTaskId])
+  @@index([miniTaskId, verified])
+}
+
+/// A human's verdict on a decision dotAI made.
+///
+/// The feedback loop's record: what the system decided, what a person decided
+/// instead, and why. Where the two differ the human verdict is the label, and
+/// `threshold-eval.ts` measures agreement over time from these rows.
+model DecisionFeedback {
+  id        String @id @default(cuid())
+  requestId String
+
+  /// ALLOW | ANNOTATE | REGENERATE | HOLD | BLOCK, as dotAI decided.
+  originalDecision String
+  /// What the reviewer decided instead. Equal to the original when upheld.
+  humanDecision    String
+  /// Which control produced the original: firewall, policy, performance...
+  source           String @default("")
+
+  /// Free text from the reviewer. The most useful column for improving rules.
+  comment String @default("")
+  /// Optional corrected output, when the reviewer supplied one.
+  correction String @default("")
+
+  profileId String @default("")
+  reviewer  String @default("")
+
+  createdAt DateTime @default(now())
+
+  @@index([originalDecision, createdAt])
+  @@index([requestId])
+}

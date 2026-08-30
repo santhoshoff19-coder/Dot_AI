@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body { height: 100%; }
+
+body {
+  @apply bg-canvas text-ink antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Scrollbars: present but quiet. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #23232E; border-radius: 999px; border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #34343F; background-clip: content-box; }
+
+@layer utilities {
+  .hairline { @apply border border-line; }
+  .surface { @apply bg-surface hairline rounded-xl; }
+  .focus-ring {
+    @apply outline-none ring-offset-0 focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+}
+
+/* Streaming caret */
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #7C6CFF;
+  @apply animate-blink;
+}
+
+.prose-chat { @apply text-[15px] leading-[1.7] text-ink/90; }
+.prose-chat p { @apply mb-3; }
+.prose-chat p:last-child { @apply mb-0; }
+.prose-chat ul { @apply mb-3 space-y-1.5 pl-5 list-disc marker:text-muted; }
+.prose-chat code {
+  @apply rounded bg-elevated px-1.5 py-0.5 text-[13px] text-accent-soft hairline;
+}
