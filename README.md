@@ -280,31 +280,3 @@ models and persists the run. The cheapest candidate clearing every threshold
 is labelled `MOCK` and measures the deterministic classifier, which is not
 evidence about any provider model.
 
-## Known limitations
-
-- **The verifier model rung is not wired.** The performance ladder runs
-  calculator → retrieval → evidence → calibration. An independent verifier LLM
-  is a designed rung but is not implemented; `deep` currently adds a review pass
-  rather than a second model.
-- **Retrieval is keyword overlap**, not embeddings. `RetrievalService` is an
-  interface with a local implementation and a small seed corpus; a vector store
-  drops in behind it.
-- **Comparative fairness is text-only.** Stereotype detection works; comparing
-  outcomes across equivalent cases needs historical decision data.
-- **Image generation is unproven against a live provider.** The OpenRouter
-  request shape follows the current documented API, but with no key only the
-  mock path has run. Mock output is a generated SVG, always flagged
-  `simulated: true` — never passed off as a provider image.
-- **The CAI benchmark has only run in mock mode**, so its numbers describe the
-  fallback classifier, not any model.
-- **Audio and video generation are not implemented.** They are classified and
-  filtered correctly, then rejected with a clear error.
-- **Actions are simulated.** The Action Gate evaluates fully and reports the
-  stage that settled it, but no external system is contacted.
-- **Single local user.** No authentication; the actor is a fixed
-  `support_agent` with a fixed permission set.
-- **Learning records outcomes but does not yet retrain routing.** Reliability is
-  tracked per model and surfaced on `/usage`; routing weights are not adjusted
-  until a model passes the minimum sample size, and that step is not built.
-- **Documents are read as plain text.** PDF and DOCX upload and store correctly
-  but their text is not extracted for grounding.
